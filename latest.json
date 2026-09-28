@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "version": "0.9.4.2-d1",
-  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.4.2-d1.zip",
-  "sha256": "cf357a0fc39da111c28b6d8e079b75c90f18a2cfbad2105da0846557001f95fd",
+  "version": "2026.9.29.1-d1",
+  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-2026.9.29.1-d1.zip",
+  "sha256": "9794c603db981a4f411f1564d33b42de91c5ab2679dd38e14be81f79bba298bb",
   "supportedClientVersions": [
     "1.18.0"
   ]

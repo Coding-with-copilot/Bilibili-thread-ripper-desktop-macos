@@ -1,14 +1,14 @@
 # 版本和更新文件
 
-对外完整版本是 `主版本-d桌面修订`，例如 `0.9.1.1-d1`、`0.9.1.1-d2`。主版本升级后从 `d1` 开始，例如 `0.9.1.2-d1`。下文单独写的 d1 到 d5 都是 0.9.1.1 的桌面修订，“d5 起”包括之后的所有版本。`desktop.json` 的 `baseVersion` 与 `adapterRevision` 是构建检查依据，`version` 必须等于两者拼接的完整版本。
+对外完整版本是 `主版本-d桌面修订`，例如 `0.9.1.1-d1`、`0.9.1.1-d2`。主版本升级后从 `d1` 开始，例如 `0.9.1.2-d1`。浏览器版从 2026.9.27.1 起改用日期版本号（`年.月.日.N`），桌面版跟着写成 `2026.9.29.1-d1` 这样，格式检查照样是四段数字加 `-d` 修订号。下文单独写的 d1 到 d5 都是 0.9.1.1 的桌面修订，“d5 起”包括之后的所有版本。`desktop.json` 的 `baseVersion` 与 `adapterRevision` 是构建检查依据，`version` 必须等于两者拼接的完整版本。
 
 `latest.json` 是客户端和一键安装命令唯一读取的更新入口，固定在本仓库 main 分支。不使用 GitHub Release，也不需要额外服务器或密钥。
 
 ```json
 {
   "schema": 1,
-  "version": "0.9.4.2-d1",
-  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-0.9.4.2-d1.zip",
+  "version": "2026.9.29.1-d1",
+  "downloadUrl": "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper-desktop/main/packages/BTR_Desktop-2026.9.29.1-d1.zip",
   "sha256": "构建时自动生成的64位SHA-256",
   "supportedClientVersions": ["1.18.0"]
 }

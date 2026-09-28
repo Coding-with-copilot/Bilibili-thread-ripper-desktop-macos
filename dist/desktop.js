@@ -1,4 +1,4 @@
-globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.4.2-d1","adapterRevision":1};
+globalThis.__BTR_DESKTOP_RELEASE__={"version":"2026.9.29.1-d1","adapterRevision":1};
 
 /* shared/range-core.js */
 (function installRangeCore(root) {
@@ -652,7 +652,16 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.4.2-d1","adapterRevision":1};
   // connections that bring nothing only add risk. A server refusing the load (412, 429)
   // steps it back too, and nothing climbs past a refused level until it has rested. The
   // level is kept across videos on the same page; a new page starts at 8 again.
+  //
+  // Each start (a new video, a seek outside the buffer) opens with at least 16 threads: the
+  // first seconds are when a slow node turns into a spinning wheel. Once the buffer is well
+  // ahead, the count steps back down to the level the page had before. A sign of not keeping
+  // up meanwhile climbs as usual and ends the start there; so does half a minute without
+  // catching up. From then on the rules above carry on.
   const AUTO_LADDER = Object.freeze([8, 12, 16, 24, 32]);
+  const AUTO_STARTUP_LEVEL = 2;
+  const AUTO_STARTUP_COMFORT_SECONDS = 15;
+  const AUTO_STARTUP_MAX_MS = 30000;
   const AUTO_STEP_COOLDOWN_MS = 2500;
   const AUTO_TRIAL_MS = 10000;
   const AUTO_WINDOW_MS = 5000;
@@ -672,7 +681,9 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.4.2-d1","adapterRevision":1};
       buckets: [], lastActivityAt: -Infinity,
       // Time the connections spent saturated: intervals of { from, to } within the window.
       saturated: false, saturatedSince: 0, saturatedSpans: [],
-      aheadSamples: [], pressureSince: 0
+      aheadSamples: [], pressureSince: 0,
+      // The start of a session while it runs above the page's own level: { base, until }.
+      startup: null
     };
     const threads = () => AUTO_LADDER[state.level];
 
@@ -736,7 +747,18 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.4.2-d1","adapterRevision":1};
       }
       if (next >= AUTO_LADDER.length) return false;
       setLevel(next, reason, { from: state.level, level: next, at, baseline: throughput(at), stalled: false });
+      // Not keeping up even with the start's threads: the start ends at this level.
+      state.startup = null;
       return true;
+    }
+
+    // How high a start may go: up to 16 threads, but not onto or past a level the server
+    // refused (a fruitless trial does not hold it back; the start comes down on its own).
+    function startupLevel(at) {
+      if (resting(state.level, at)?.hard) return state.level;
+      let level = state.level;
+      while (level < AUTO_STARTUP_LEVEL && !resting(level + 1, at)?.hard) level += 1;
+      return level;
     }
 
     function stepDown(target, restLevel, reason, restMs, hard) {
@@ -795,6 +817,13 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.4.2-d1","adapterRevision":1};
       buffer(ahead, playing, at = now()) {
         state.aheadSamples.push({ at, ahead });
         while (state.aheadSamples.length && at - state.aheadSamples[0].at > AUTO_PRESSURE_MS + AUTO_BUCKET_MS) state.aheadSamples.shift();
+        // The start: once well ahead, one step back down per cooldown towards the page's level.
+        const start = state.startup;
+        if (start && at >= start.until) state.startup = null;
+        else if (start && ahead >= AUTO_STARTUP_COMFORT_SECONDS && at - state.changedAt >= AUTO_STEP_COOLDOWN_MS) {
+          if (state.level > start.base) setLevel(state.level - 1, `开头已经跟上，线程数降到 ${AUTO_LADDER[state.level - 1]}`, null);
+          if (state.level <= start.base) state.startup = null;
+        }
         const earlier = state.aheadSamples.find((item) => at - item.at >= AUTO_PRESSURE_MS);
         const downloading = at - state.lastActivityAt < AUTO_ACTIVITY_MS;
         const pressed = playing && downloading && ahead < AUTO_LOW_BUFFER_SECONDS && earlier && ahead <= earlier.ahead + 0.05;
@@ -813,14 +842,21 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.4.2-d1","adapterRevision":1};
       pushback(status) {
         return stepDown(Math.max(0, state.level - 1), state.level, `服务器返回 ${status}`, AUTO_PUSHBACK_REST_MS, true);
       },
-      // A new playback session: what the buffer did before means nothing now.
+      // A new playback session: what the buffer did before means nothing now, and the start
+      // runs with more threads. A session that begins while another one's start is still
+      // running keeps the page's own level to come back to.
       newSession() {
+        const at = now();
         state.aheadSamples.length = 0;
         state.pressureSince = 0;
         state.trial = null;
         state.buckets.length = 0;
         state.saturatedSpans.length = 0;
-        if (state.saturated) state.saturatedSince = now();
+        if (state.saturated) state.saturatedSince = at;
+        const base = state.startup ? state.startup.base : state.level;
+        const target = startupLevel(at);
+        if (target > state.level) setLevel(target, `开头先用 ${AUTO_LADDER[target]} 线程`, null);
+        state.startup = state.level > base ? { base, until: at + AUTO_STARTUP_MAX_MS } : null;
       },
       status() {
         const at = now();
@@ -829,14 +865,15 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.4.2-d1","adapterRevision":1};
           throughputBps: Math.round(throughput(at)), saturation: Math.round(saturation(at) * 100) / 100,
           buckets: state.buckets.length, activityAgeMs: Math.round(at - state.lastActivityAt),
           resting: [...state.resting.entries()].filter(([, rest]) => rest.until > at).map(([level, rest]) => ({ threads: AUTO_LADDER[level], hard: rest.hard, forMs: Math.round(rest.until - at) })),
-          trial: state.trial ? { from: AUTO_LADDER[state.trial.from], level: AUTO_LADDER[state.trial.level], ageMs: Math.round(at - state.trial.at), baselineBps: Math.round(state.trial.baseline), stalled: state.trial.stalled } : null
+          trial: state.trial ? { from: AUTO_LADDER[state.trial.from], level: AUTO_LADDER[state.trial.level], ageMs: Math.round(at - state.trial.at), baselineBps: Math.round(state.trial.baseline), stalled: state.trial.stalled } : null,
+          startup: state.startup ? { base: AUTO_LADDER[state.startup.base], forMs: Math.round(state.startup.until - at) } : null
         };
       },
       reset() {
         state.level = 0; state.changedAt = 0; state.reason = "起步"; state.steps = 0; state.trial = null;
         state.resting.clear(); state.buckets.length = 0; state.lastActivityAt = -Infinity;
         state.saturated = false; state.saturatedSince = 0; state.saturatedSpans.length = 0;
-        state.aheadSamples.length = 0; state.pressureSince = 0;
+        state.aheadSamples.length = 0; state.pressureSince = 0; state.startup = null;
       }
     });
   }
@@ -2174,7 +2211,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.4.2-d1","adapterRevision":1};
   const emit = () => listeners.forEach(fn => { try { fn({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }); } catch (error) { console.error("BTR settings listener", error); } });
   const channel = typeof BroadcastChannel === "function" ? new BroadcastChannel("BTR_Desktop.settings.v1") : null;
   const api = {
-    version: root.__BTR_DESKTOP_RELEASE__?.version || "0.9.4.2-d1",
+    version: root.__BTR_DESKTOP_RELEASE__?.version || "2026.9.29.1-d1",
     adapterRevision: root.__BTR_DESKTOP_RELEASE__?.adapterRevision || 1,
     categories,
     getSettings: () => ({ ...current, customHosts: current.customHosts.slice(), debugCategories: { ...current.debugCategories } }),
@@ -2488,19 +2525,21 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.4.2-d1","adapterRevision":1};
   // 自动线程数 (the controller lives in the shared idm-downloader.js). The client's own video
   // element tells it what the browser version's player tells it there: a stall once playback
   // had started, and a low buffer that stops growing while bytes arrive. A new video or a
-  // seek starts the buffer watch afresh.
+  // seek starts the buffer watch afresh, and opens with more threads; switched off, the
+  // controller is left alone.
   const auto = root.__BILI_IDM_DOWNLOADER_FACTORY__?.autoConcurrency;
   const autoOn = () => { const settings = api.getSettings(); return settings.enabled && settings.autoConcurrency; };
+  const newSession = () => { if (autoOn()) auto?.newSession(); };
   let watched = null, watchEvents = null;
   function watch(element) {
     if (!auto || element === watched) return;
-    watchEvents?.abort(); watchEvents = null; watched = element; auto.newSession();
+    watchEvents?.abort(); watchEvents = null; watched = element; newSession();
     if (!element) return;
     const events = watchEvents = new AbortController();
     const on = (name, handler) => element.addEventListener(name, handler, { signal: events.signal });
     let started = false; // playing since the last load or seek
-    on("emptied", () => { started = false; auto.newSession(); });
-    on("seeking", () => { started = false; auto.newSession(); });
+    on("emptied", () => { started = false; newSession(); });
+    on("seeking", () => { started = false; newSession(); });
     on("playing", () => { started = true; });
     on("waiting", () => { if (started && autoOn() && !element.seeking && !element.paused) auto.stall("播放卡了一下"); });
     on("timeupdate", () => {
@@ -2550,7 +2589,7 @@ globalThis.__BTR_DESKTOP_RELEASE__={"version":"0.9.4.2-d1","adapterRevision":1};
     if (next !== player || key !== identity) {
       notices.detach(); player = next; identity = key; video = null;
       api.transport.switchRoute(key);
-      auto?.newSession();
+      newSession();
     }
     bind(next);
     watch(element?.isConnected ? element : null);

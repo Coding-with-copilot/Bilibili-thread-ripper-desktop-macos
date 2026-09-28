@@ -98,11 +98,14 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
     assert.equal(await page.locator('[name="btr-desktop-player-mode"][value="overseas"]').isChecked(), true);
     await page.evaluate(() => __BTR_DESKTOP__.setSettings({concurrency:16,mode:"mainland"}));
     console.log("PASS native player CDN/thread settings persist, synchronize and remount after switching");
-    // 自动线程数 in the client: its own video element stalls once playing has started, and the
-    // thread count the transport hands the downloader goes up. Off, a stall changes nothing;
-    // a stall before the first frame is startup, not a stall.
+    // 自动线程数 in the client: a new video or a seek opens with 16 threads, its own video
+    // element stalls once playing has started, and the thread count the transport hands the
+    // downloader goes up. Off, nothing changes the controller; a stall before the first frame
+    // is startup, not a stall.
     const autoSignals = await page.evaluate(async () => {
       const auto = __BILI_IDM_DOWNLOADER_FACTORY__.autoConcurrency;
+      auto.reset();
+      __BTR_DESKTOP__.setSettings({ autoConcurrency: false, concurrency: 16 });
       const video = document.createElement("video"); document.body.append(video);
       let paused = false; Object.defineProperty(video, "paused", { get: () => paused });
       const listeners = {};
@@ -120,18 +123,18 @@ const server = http.createServer((req, res) => { res.setHeader("Content-Type", r
       await until(() => false, 600);
       const beforeFirstFrame = auto.threads();
       video.dispatchEvent(new Event("playing"));
-      const stepped = await until(() => auto.threads() > 8, 4000);
+      const stepped = await until(() => auto.threads() > 16, 4000);
       const result = { whenOff, beforeFirstFrame, stepped, level: auto.threads(), transport: threads(), status: __BTR_DESKTOP__.getStatus().autoThreads?.threads };
       window.biliPlayer = undefined; listeners.Player_Dispose?.(); video.remove();
       __BTR_DESKTOP__.setSettings({ autoConcurrency: false, concurrency: 16 });
       return result;
     });
     assert.deepEqual(autoSignals.whenOff, { level: 8, transport: 16 }, "switched off, a stall must not change anything");
-    assert.equal(autoSignals.beforeFirstFrame, 8, "waiting before the first frame is startup, not a stall");
+    assert.equal(autoSignals.beforeFirstFrame, 16, "a seek opens with 16 threads, and waiting before the first frame is startup, not a stall");
     assert.equal(autoSignals.stepped, true);
     assert.equal(autoSignals.transport, autoSignals.level, "the transport hands the downloader the controller's count");
     assert.equal(autoSignals.status, autoSignals.level);
-    console.log("PASS automatic threads: the client's video element stalls, the count steps up to", autoSignals.level, "and the transport uses it; off or before the first frame nothing changes");
+    console.log("PASS automatic threads: a seek opens with 16, the client's video element stalls, the count steps up to", autoSignals.level, "and the transport uses it; off or before the first frame nothing changes");
     // Custom CDN: known servers are ticked, others typed in; only Bilibili's video servers are accepted.
     assert.equal(await page.locator(".btr-custom").isVisible(), false);
     await page.locator('#btr-desktop-settings [data-mode="custom"]').click();
