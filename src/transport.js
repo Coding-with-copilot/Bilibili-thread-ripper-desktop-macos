@@ -11,7 +11,22 @@
   // BTR loads on every client version. If a future player stops matching what this adapter
   // expects, stop accelerating in this window instead of adding a failed attempt to every request.
   const FAILURE_LIMIT = 6;
-  const stats = { suspended: false, acceleratedRequests: 0, routeAcceleratedRequests: 0, acceleratedBytes: 0, networkBytes: 0, maxThreads: 0, fallbackRequests: 0, abortedRequests: 0, timedOutRequests: 0, activeThreads: 0, lastError: "", route: "", xhrRequests: 0, fetchRequests: 0 };
+  const stats = { suspended: false, acceleratedRequests: 0, routeAcceleratedRequests: 0, acceleratedBytes: 0, networkBytes: 0, maxThreads: 0, fallbackRequests: 0, abortedRequests: 0, timedOutRequests: 0, activeThreads: 0, lastError: "", route: "", xhrRequests: 0, fetchRequests: 0,
+    fetchCalls: 0, xhrCalls: 0, mediaFetch: 0, mediaXHR: 0, resourceMedia: 0, eligibleMedia: 0, lastMedia: "", lastSkip: "", skipReasons: {} };
+  const mediaLike = value => { try { return /\.(?:m4s|mp4|flv)$/i.test(new URL(value, location.href).pathname); } catch (_) { return false; } };
+  function noteMedia(url, kind, headers) {
+    if (!mediaLike(url)) return false;
+    const host = hostOf(url), type = new URL(url, location.href).pathname.match(/\.(m4s|mp4|flv)$/i)?.[1] || "媒体";
+    let range = "";
+    try { range = new Headers(headers).get("range") || ""; } catch (_) {}
+    stats.lastMedia = `${kind} ${host || "本地"} .${type} ${range || "无 Range"}`;
+    if (kind === "fetch") stats.mediaFetch++; else stats.mediaXHR++;
+    return true;
+  }
+  function skip(url, reason) {
+    if (mediaLike(url)) { stats.lastSkip = reason; stats.skipReasons[reason] = (stats.skipReasons[reason] || 0) + 1; }
+    return null;
+  }
   function wireProgress(operation, start, end) {
     if (operation.controller.signal.aborted || operation.generation !== generation || end < start) return;
     const merged = [];
@@ -83,18 +98,22 @@
   });
   const mediaKey = value => { try { const u = new URL(value, location.href); return u.pathname; } catch (_) { return ""; } };
   function eligible(url, method, headers) {
-    if (location.origin === "https://bilipc.bilibili.com" && location.pathname !== "/player.html") return null;
-    if (stats.suspended || !api.getSettings().enabled || String(method || "GET").toUpperCase() !== "GET" || !core.isBilibiliMediaUrl(url)) return null;
+    if (!/\/player\.html$/.test(location.pathname)) return skip(url, "不在播放页面");
+    if (stats.suspended) return skip(url, "加速已暂停");
+    if (!api.getSettings().enabled) return skip(url, "加速开关已关闭");
+    if (String(method || "GET").toUpperCase() !== "GET") return skip(url, "不是 GET");
+    if (!core.isBilibiliMediaUrl(url)) return skip(url, "不在支持的 HTTPS CDN 列表");
     api.synchronizePlayer?.();
     let match;
-    try { match = /^bytes=(\d+)-(\d+)$/.exec(new Headers(headers).get("range") || ""); } catch (_) { return null; }
-    if (!match) return null; // Never guess file size or accelerate API, licence, subtitle, or login requests.
+    try { match = /^bytes=(\d+)-(\d+)$/.exec(new Headers(headers).get("range") || ""); } catch (_) { return skip(url, "请求头无法读取"); }
+    if (!match) return skip(url, "没有明确起止的 Range"); // Never guess file size or accelerate API, licence, subtitle, or login requests.
     const start = Number(match[1]); let end = Number(match[2]);
     const total = totals.get(mediaKey(url));
     if (total && start < total) end = Math.min(end, total - 1);
     const length = end - start + 1;
-    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start || length > 64 * 1024 * 1024) return null;
-    if (!resolverFor(url).startupCandidates().length) return null;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start || length > 64 * 1024 * 1024) return skip(url, "Range 长度不适合拆分");
+    if (!resolverFor(url).startupCandidates().length) return skip(url, "没有可用 CDN 节点");
+    stats.eligibleMedia++;
     return { start, end, length };
   }
   function resolverFor(url) {
@@ -177,9 +196,11 @@
     log("BTR 加速已暂停", `连续 ${FAILURE_LIMIT} 次加速失败，这个播放窗口改用客户端原生下载。重新打开播放窗口会再次尝试。`, "error");
   }
   root.fetch = function (input, init) {
+    stats.fetchCalls++;
     const url = typeof input === "string" || input instanceof URL ? String(input) : input?.url;
     const method = init?.method || input?.method || "GET";
     const headers = init?.headers || input?.headers;
+    noteMedia(url, "fetch", headers);
     const range = eligible(url, method, headers);
     if (!range) return nativeFetch(input, init);
     const ticket = generation, signal = init?.signal || input?.signal;
@@ -219,7 +240,13 @@
       task.state = 0;
     }
     send(body) {
+      stats.xhrCalls++;
       const request = this._btrRequest;
+      if (request && noteMedia(request.url, "XHR", request.headers)) {
+        if (!request.async) skip(request.url, "同步 XHR");
+        else if (body) skip(request.url, "XHR 带请求体");
+        else if (this.responseType !== "arraybuffer") skip(request.url, `XHR 响应类型为 ${this.responseType || "默认"}`);
+      }
       const range = request?.async && !body && this.responseType === "arraybuffer" && eligible(request.url, request.method, request.headers);
       if (!range) return super.send(body);
       if (this._btr) throw new DOMException("Request already sent", "InvalidStateError");
@@ -256,6 +283,15 @@
     }
   }
   root.XMLHttpRequest = DesktopXHR;
+  let resourceObserver = null;
+  if (String(api.version || "").includes("mac-preview") && typeof PerformanceObserver === "function") {
+    try {
+      resourceObserver = new PerformanceObserver(list => {
+        for (const entry of list.getEntries()) if (mediaLike(entry.name)) stats.resourceMedia++;
+      });
+      resourceObserver.observe({ type: "resource", buffered: true });
+    } catch (_) { resourceObserver = null; }
+  }
   api.transport = Object.freeze({
     eligible,
     register(playinfo) {
@@ -274,6 +310,7 @@
     },
     snapshot: () => ({ ...stats, generation, pending: pending.size, bannedHosts: bans.hosts(), threads: threadsNow() }),
     restore() {
+      resourceObserver?.disconnect();
       for (const controller of pending) controller.abort(new DOMException("加速已停止", "AbortError"));
       root.fetch = nativeFetch; root.XMLHttpRequest = NativeXHR;
     }

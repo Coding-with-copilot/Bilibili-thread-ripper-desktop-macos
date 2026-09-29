@@ -54,6 +54,18 @@ async function inFlight(count, width, start) {
   }
 }
 
+test("media requests skipped by the hook expose the reason without the signed URL", async () => {
+  const { context, api } = setup(async () => new Response("native"));
+  try {
+    await context.fetch(address("probe", "private-token"));
+    const status = api.transport.snapshot();
+    assert.equal(status.mediaFetch, 1);
+    assert.equal(status.eligibleMedia, 0);
+    assert.equal(status.lastSkip, "没有明确起止的 Range");
+    assert.doesNotMatch(JSON.stringify(status), /private-token/);
+  } finally { api.transport.restore(); }
+});
+
 for (const concurrency of [8, 32]) {
   test(`a run of small requests takes the nodes in turns (${concurrency} threads)`, { timeout: 60000 }, async () => {
     const counts = new Map();

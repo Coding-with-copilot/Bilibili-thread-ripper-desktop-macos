@@ -2,7 +2,7 @@
   "use strict";
   const api = root.__BTR_DESKTOP__, threads = [4, 8, 16, 32, 64, 128];
   const id = "btr-desktop-player-settings";
-  let panel, unsubscribe, scheduled = false;
+  let panel, unsubscribe, scheduled = false, diagnostic, diagnosticTimer;
   const style = document.createElement("style");
   style.textContent = `
     #${id}{margin:0 0 16px;color:#fff;font-size:12px;text-align:left}
@@ -45,6 +45,16 @@
       group("并发线程", "concurrency", [["auto", "自动"], ...threads.map(value => [value, String(value)])])
     );
     const error = document.createElement("div"); error.className = "btr-save-error"; error.setAttribute("role", "status"); panel.append(error);
+    if (api.version.includes("mac-preview")) {
+      diagnostic = document.createElement("div"); diagnostic.className = "btr-custom-hint"; panel.append(diagnostic);
+      const show = () => {
+        if (!diagnostic.isConnected) return;
+        const s = api.transport?.snapshot();
+        diagnostic.textContent = `诊断：接管 ${s?.routeAcceleratedRequests || 0}；媒体 fetch/XHR ${s?.mediaFetch || 0}/${s?.mediaXHR || 0}；页面资源 ${s?.resourceMedia || 0}。${s?.lastSkip ? `最近跳过：${s.lastSkip}。` : ""}${s?.lastMedia ? `最近请求：${s.lastMedia}` : ""}`;
+      };
+      show();
+      if (!diagnosticTimer) diagnosticTimer = setInterval(show, 1500);
+    }
     panel.addEventListener("change", event => {
       const input = event.target; if (!(input instanceof HTMLInputElement) || !input.checked) return;
       const setting = input.dataset.btrSetting;
@@ -69,6 +79,6 @@
   }
   const observer = new MutationObserver(() => { if (!scheduled) { scheduled = true; requestAnimationFrame(mount); } });
   observer.observe(document.documentElement, {childList:true,subtree:true});
-  root.addEventListener("pagehide", () => { observer.disconnect(); unsubscribe?.(); }, {once:true});
+  root.addEventListener("pagehide", () => { observer.disconnect(); unsubscribe?.(); clearInterval(diagnosticTimer); }, {once:true});
   mount();
 })(globalThis);
